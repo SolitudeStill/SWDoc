@@ -11,20 +11,29 @@ using YamlDotNet.Core;
 using YamlDotNet.Core.Events;
 using System.Security.Cryptography;
 using Markdig.Syntax;
+using System.Linq;
+using BalaDoc.Exception;
 
 namespace BalaDoc
 {
-    class PostFront
+    record DocumentInfo
     {
+        public string Path { get; set; }
+        public string Content { get; set; }
         public IList<string>? Category { get; set; }
-
         public DateTime? Date { get; set; }
-
         public string Title { get; set; }
-
         public DateTime? LastEdit { get; set; }
-
         public string Hash { get; set; }
+
+        public void Update(DocumentInfo info)
+        {
+            var props = info.GetType().GetProperties();
+            foreach (var prop in props)
+            {
+                prop.SetValue(this, prop.GetValue(info) ?? prop.GetValue(this));
+            }
+        }
     }
     public enum VerTestResult
     {
@@ -34,11 +43,19 @@ namespace BalaDoc
     {
         private readonly int version = 0;
         private readonly string WorkDir;
+        private static readonly MarkdownPipeline pipeline = new MarkdownPipelineBuilder()
+                            .UseAdvancedExtensions()
+                            .UseYamlFrontMatter()
+                            .UseSyntaxHighlighting()
+                            .Build();
+        private static readonly IDeserializer yamlDeserializer = new DeserializerBuilder()
+                            .WithNamingConvention(CamelCaseNamingConvention.Instance)
+                            .Build();
         #region Directories
         private static readonly string _DirSourceDoc = "doc";
         private static readonly string _DirTemplate = "template";
         private static readonly string _DirTemplateDefault = $"{_DirTemplate}/Default";
-        private static readonly string _DirMeta = "./inf";
+        private static readonly string _DirMeta = ".inf";
         private static readonly string _DirMetaFileTracking = $"{_DirMeta}/track";
         private static readonly string _DirCategories = "category";
         private static readonly string _DirDestPages = "pages";
@@ -46,9 +63,9 @@ namespace BalaDoc
         private static readonly string _FileMetaSerialNum = $"{_DirMeta}/sn";
         #endregion
 
-        public Composer(string WorkDir)
+        public Composer(string workDir)
         {
-            WorkDir = Path.GetDirectoryName(WorkDir);
+            WorkDir = workDir;
         }
         public static VerTestResult TestVersion(Composer c)
         {
@@ -67,25 +84,20 @@ namespace BalaDoc
         }
         public static void CreateDirs(string baseDir, string[] dirs)
         {
-            var dir = Path.GetDirectoryName(baseDir);
-
             foreach (var d in dirs)
             {
-                Directory.CreateDirectory(Path.Combine(dir, d));
+                Directory.CreateDirectory(Path.Combine(baseDir, d));
             }
         }
-        public static PostFront GetFront(string content)
+        public static DocumentInfo GetFront(string content)
         {
-            var yamlDeserializer = new DeserializerBuilder()
-                .WithNamingConvention(CamelCaseNamingConvention.Instance)
-                .Build();
-            PostFront front;
+            DocumentInfo front;
             using (var input = new StringReader(content))
             {
                 var parser = new Parser(input);
                 parser.Consume<StreamStart>();
                 parser.Consume<DocumentStart>();
-                front = yamlDeserializer.Deserialize<PostFront>(parser);
+                front = yamlDeserializer.Deserialize<DocumentInfo>(parser);
                 parser.Consume<DocumentEnd>();
             }
 
@@ -119,16 +131,11 @@ namespace BalaDoc
             }
             return BitConverter.ToInt32(bs);
         }
-        public void ProcessDoc(string filename)
+        [Obsolete]
+        public void DocProcess(string filename)
         {
-            var pipeline = new MarkdownPipelineBuilder()
-                .UseAdvancedExtensions()
-                .UseYamlFrontMatter()
-                .UseSyntaxHighlighting()
-                .Build();
-
             var content = File.ReadAllText(filename);
-            PostFront front = GetFront(content);
+            DocumentInfo front = GetFront(content);
             front.Hash = GetHash(content); // TODO: this should be done before the function, later do it
 
             if (front.Date == null)
@@ -141,27 +148,118 @@ namespace BalaDoc
             // 80 character at maximum
             foreach (var block in doc)
             {
-                if(block is LeafBlock b)
+                if (block is LeafBlock b)
                 {
-                    front.Title = (b.Inline.FirstChild as Markdig.Syntax.Inlines.LiteralInline)?.Content.ToString();
+                    front.Title = (b.Inline.FirstChild
+                        as Markdig.Syntax.Inlines.LiteralInline)?.Content.ToString();
                     if (front.Title.Length > 80)
                         front.Title = front.Title.Substring(0, 80);
                     break;
                 }
             }
-            
+
             var result = Markdown.ToHtml(content, pipeline);
 
-            // the directory will be based on "CurrentDirectory"
-            File.WriteAllText(Path.Combine(Path.GetDirectoryName(filename), "../page", "gen.html"), result);
+            // TODO: Add template filling
+            File.WriteAllText(Path.Combine(WorkDir, _DirDestPages, front.Date?.ToString("yyyy-MM"), $"{front.Title}.html"), result);
         }
-
-        public void InitDir(string route)
+        public void DocProcess(DocumentInfo document)
         {
-            string[] dirs = { _DirMeta, _DirMetaFileTracking, _DirSourceDoc, _DirTemplate, _DirTemplateDefault, _DirCategories, _DirDestPages };
-            CreateDirs(WorkDir,dirs);
+            document.Update(GetFront(document.Content));
+
+            var doc = Markdown.Parse(document.Content, pipeline);
+
+            // Use the first leaf block (containing plain text) content as the title
+            // 80 character at maximum
+            foreach (var block in doc)
+            {
+                
+
+                if ((block is LeafBlock b) && (b.Inline is not null))
+                {
+                    document.Title = (b.Inline.FirstChild
+                        as Markdig.Syntax.Inlines.LiteralInline)?.Content.ToString();
+                    if (document.Title.Length > 80)
+                        document.Title = document.Title.Substring(0, 80);
+                    break;
+                }
+            }
+
+            var result = Markdown.ToHtml(document.Content, pipeline);
+            var dirPath = Path.Combine(WorkDir, _DirDestPages, document.Date?.ToString("yyyy-MM"));
+
+            if (!Directory.Exists(dirPath))
+                Directory.CreateDirectory(dirPath);
+            // TODO: Add template filling
+            File.WriteAllText(Path.Combine(dirPath, $"{document.Title}.html"), result);
+        }
+        public bool DocCheckModified(string filename, string hash)
+        {
+            var rawfilename = Path.GetFileName(filename);
+            var i = rawfilename.LastIndexOf('.');
+            rawfilename = rawfilename[0..(i == -1 ? ^0 : i)];
+
+            try
+            {
+                if (File.ReadAllText(Path.Combine(WorkDir, _DirMetaFileTracking, rawfilename)) == hash)
+                {
+                    return false;
+                }
+            }
+            catch (System.Exception)
+            {
+            }
+            return true;
+        }
+        public void DocRecord(string filename, string hash)
+        {
+            var rawfilename = Path.GetFileName(filename);
+            var i = rawfilename.LastIndexOf('.');
+            rawfilename = rawfilename[0..(i == -1 ? ^0 : i)];
+
+            File.WriteAllText(Path.Combine(WorkDir, _DirMetaFileTracking, rawfilename), hash);
+        }
+        public void InitDir()
+        {
+            if (Directory.EnumerateFileSystemEntries(WorkDir).Count() > 0)
+            {
+                throw new InitializeNonemptyDirectoryException();
+            }
+            CreateDirs(WorkDir, new string[] { _DirMeta, _DirMetaFileTracking, _DirSourceDoc, _DirTemplate, _DirTemplateDefault, _DirCategories, _DirDestPages });
 
             CurveVersion(this);
+        }
+
+        public void Generate(bool completeGenerate = false)
+        {
+            if (TestVersion(this) != VerTestResult.Current)
+                throw new ComposerVersionMismatchException();
+
+            // collect all documents
+            var docs = Directory.EnumerateFiles(Path.Combine(WorkDir, _DirSourceDoc));
+            foreach (var doc in docs)
+            {
+                // TODO: IO operation will be meaninglessly excuted twice, need refactoring
+                //  and read all text right now is also dirty here
+                var content = File.ReadAllText(doc);
+                var doc_hash = GetHash(content);
+
+                if (!completeGenerate && !DocCheckModified(doc, doc_hash))
+                {
+                    continue;
+                }
+
+                DocumentInfo thisDoc = new()
+                {
+                    Path = doc,
+                    Content = content,
+                    Hash = doc_hash,
+                    Date = File.GetCreationTime(doc),
+                    LastEdit = File.GetLastWriteTime(doc)
+                };
+                DocProcess(thisDoc);
+                DocRecord(doc, doc_hash);
+            }
         }
     }
 }

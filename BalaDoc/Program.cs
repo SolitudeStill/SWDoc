@@ -1,4 +1,5 @@
 using System;
+using System.IO;
 
 namespace BalaDoc
 {
@@ -8,8 +9,8 @@ namespace BalaDoc
         {
             Console.WriteLine("Hello World!");
 
-            var c = new Composer();
-            c.ProcessDoc(Console.ReadLine());
+            var c = new Composer(Directory.GetCurrentDirectory());
+            c.Generate();
 
             Console.WriteLine("Done.");
         }

@@ -1,0 +1,8 @@
+{
+  "profiles": {
+    "BalaDoc": {
+      "commandName": "Project",
+      "workingDirectory": "D:\\GitRepository\\doctest"
+    }
+  }
+}
