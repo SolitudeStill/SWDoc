@@ -13,6 +13,8 @@ using System.Security.Cryptography;
 using Markdig.Syntax;
 using System.Linq;
 using BalaDoc.Exception;
+using System.Text.Json;
+using Masuit.Tools.Strings;
 
 namespace BalaDoc
 {
@@ -35,6 +37,50 @@ namespace BalaDoc
             }
         }
     }
+
+    class DocumentInfoComparer : IEqualityComparer<DocumentInfo>
+    {
+        // DocumentInfos are equal if their names and DocumentInfo numbers are equal.
+        public bool Equals(DocumentInfo x, DocumentInfo y)
+        {
+
+            //Check whether the compared objects reference the same data.
+            if (Object.ReferenceEquals(x, y)) return true;
+
+            //Check whether any of the compared objects is null.
+            if (Object.ReferenceEquals(x, null) || Object.ReferenceEquals(y, null))
+                return false;
+
+            //Check whether the DocumentInfos' properties are equal.
+            if (x.Path != y.Path)
+                return false;   // Absolutely different
+            var type = x.GetType();
+            var props = type.GetProperties();
+            foreach (var p in props)
+            {
+                var vx = p.GetValue(x); var vy = p.GetValue(y);
+                if (vx is null || vy is null)   // null will be regard as same thing
+                    continue;
+                else if (vx != vy)
+                    return false;
+            }
+
+            return true;
+        }
+
+        // If Equals() returns true for a pair of objects
+        // then GetHashCode() must return the same value for these objects.
+
+        public int GetHashCode(DocumentInfo DocumentInfo)
+        {
+            //Check whether the object is null
+            if (Object.ReferenceEquals(DocumentInfo, null)) return 0;
+
+            //Get hash code for the Name field if it is not null.
+            return DocumentInfo.Path == null ? 0 : DocumentInfo.Path.GetHashCode();
+        }
+    }
+
     public enum VerTestResult
     {
         Old, Current, Mirainokoto, Uninitialized
@@ -51,17 +97,32 @@ namespace BalaDoc
         private static readonly IDeserializer yamlDeserializer = new DeserializerBuilder()
                             .WithNamingConvention(CamelCaseNamingConvention.Instance)
                             .Build();
-        #region Directories
+
+        private HashSet<string> Categories = new();
+        private List<DocumentInfo> Documents = new();
+        private Dictionary<string, int> Counts = new();
+
+        private string TemplatePage;
+        private string TemplateIndex;
+
+        #region Directories and Files
+        private static readonly string _NameDefaultTemplate = "Default";
+
         private static readonly string _DirSourceDoc = "doc";
         private static readonly string _DirTemplate = "template";
-        private static readonly string _DirTemplateDefault = $"{_DirTemplate}/Default";
+        private static readonly string _DirTemplateDefault = $"{_DirTemplate}/{_NameDefaultTemplate}";
         private static readonly string _DirMeta = ".inf";
         private static readonly string _DirMetaFileTracking = $"{_DirMeta}/track";
         private static readonly string _DirCategories = "category";
         private static readonly string _DirDestPages = "pages";
 
+        private static readonly string _TemplateMetaUsing = $"{_DirMeta}/.";
+
         private static readonly string _FileMetaSerialNum = $"{_DirMeta}/sn";
+        private static readonly string _FileCategoriesRecord = $"{_DirCategories}/categories.json";
+
         #endregion
+
 
         public Composer(string workDir)
         {
@@ -131,38 +192,21 @@ namespace BalaDoc
             }
             return BitConverter.ToInt32(bs);
         }
-        [Obsolete]
-        public void DocProcess(string filename)
+
+        string CurrentTemplate { get => Directory.EnumerateFiles(_DirMeta).Select(path => Path.GetFileName(path)).Where(name => name[0] == '.').Select(name => name[1..^0]).FirstOrDefault(); }
+        public string GetTemplate(string templateName = "") => templateName switch
         {
-            var content = File.ReadAllText(filename);
-            DocumentInfo front = GetFront(content);
-            front.Hash = GetHash(content); // TODO: this should be done before the function, later do it
+            "" => CurrentTemplate ?? _NameDefaultTemplate,
+            string s => s
+        };
+        public void LoadTemplate(string templateName)
+        {
+            TemplatePage = File.ReadAllText(Path.Combine(WorkDir, _DirTemplate, templateName, "Tpage.html"));
+            TemplateIndex = File.ReadAllText(Path.Combine(WorkDir, _DirTemplate, templateName, "Tindex.html"));
 
-            if (front.Date == null)
-                front.Date = File.GetCreationTime(filename);
-            front.LastEdit = File.GetLastWriteTime(filename);
-
-            var doc = Markdown.Parse(content, pipeline);
-
-            // Use the first leaf block (containing plain text) content as the title
-            // 80 character at maximum
-            foreach (var block in doc)
-            {
-                if (block is LeafBlock b)
-                {
-                    front.Title = (b.Inline.FirstChild
-                        as Markdig.Syntax.Inlines.LiteralInline)?.Content.ToString();
-                    if (front.Title.Length > 80)
-                        front.Title = front.Title.Substring(0, 80);
-                    break;
-                }
-            }
-
-            var result = Markdown.ToHtml(content, pipeline);
-
-            // TODO: Add template filling
-            File.WriteAllText(Path.Combine(WorkDir, _DirDestPages, front.Date?.ToString("yyyy-MM"), $"{front.Title}.html"), result);
+            File.WriteAllText(_TemplateMetaUsing + templateName, "");
         }
+
         public void DocProcess(DocumentInfo document)
         {
             document.Update(GetFront(document.Content));
@@ -173,8 +217,6 @@ namespace BalaDoc
             // 80 character at maximum
             foreach (var block in doc)
             {
-                
-
                 if ((block is LeafBlock b) && (b.Inline is not null))
                 {
                     document.Title = (b.Inline.FirstChild
@@ -185,13 +227,24 @@ namespace BalaDoc
                 }
             }
 
-            var result = Markdown.ToHtml(document.Content, pipeline);
+            var content = Markdown.ToHtml(document.Content, pipeline);
             var dirPath = Path.Combine(WorkDir, _DirDestPages, document.Date?.ToString("yyyy-MM"));
 
             if (!Directory.Exists(dirPath))
                 Directory.CreateDirectory(dirPath);
-            // TODO: Add template filling
-            File.WriteAllText(Path.Combine(dirPath, $"{document.Title}.html"), result);
+
+            var tPage = new Template(TemplatePage);
+            tPage.Set("title", document.Title);
+            tPage.Set("content", content);
+
+            File.WriteAllText(Path.Combine(dirPath, $"{document.Title}.html"), tPage.Render());
+
+            Documents.Add(document with { Content = "", Hash = "", Path = Path.GetFileName(document.Path) });
+            foreach (var c in document.Category)
+            {
+                Categories.Add(c);
+                Counts[c] = Counts.TryGetValue(c, out int n) ? n + 1 : 1;
+            }
         }
         public bool DocCheckModified(string filename, string hash)
         {
@@ -219,6 +272,27 @@ namespace BalaDoc
 
             File.WriteAllText(Path.Combine(WorkDir, _DirMetaFileTracking, rawfilename), hash);
         }
+        public void DataSave()
+        {
+            string? cateJson = null;
+            List<DocumentInfo> cates;
+            try
+            {
+                cateJson = File.ReadAllText(Path.Combine(WorkDir, _FileCategoriesRecord));
+                cates = JsonSerializer.Deserialize<List<DocumentInfo>>(cateJson);
+
+            }
+            catch (FileNotFoundException)
+            {
+                cates = new();
+            }
+
+
+            cates = cates.Intersect(Documents, new DocumentInfoComparer()).Concat(Documents.Except(cates, new DocumentInfoComparer())).ToList();
+
+            File.WriteAllText(Path.Combine(WorkDir, _FileCategoriesRecord), JsonSerializer.Serialize(cates, new() { IgnoreNullValues = true }));
+        }
+
         public void InitDir()
         {
             if (Directory.EnumerateFileSystemEntries(WorkDir).Count() > 0)
@@ -230,22 +304,33 @@ namespace BalaDoc
             CurveVersion(this);
         }
 
-        public void Generate(bool completeGenerate = false)
+        public void IndexGenerate()
+        {
+            var tIndex = new Template(TemplateIndex);
+            tIndex.Set("PageName", "");
+
+            File.WriteAllText(Path.Combine(WorkDir, _DirDestPages, "index.html"), tIndex.Render());
+        }
+        public void Generate(string templateName = "", bool completeGenerate = false)
         {
             if (TestVersion(this) != VerTestResult.Current)
                 throw new ComposerVersionMismatchException();
-
+            
+            LoadTemplate(templateName = GetTemplate(templateName));
+            if(completeGenerate || CurrentTemplate != templateName)
+            {
+                IndexGenerate();
+            }
             // collect all documents
             var docs = Directory.EnumerateFiles(Path.Combine(WorkDir, _DirSourceDoc));
             foreach (var doc in docs)
-            {
-                // TODO: IO operation will be meaninglessly excuted twice, need refactoring
-                //  and read all text right now is also dirty here
+            { 
                 var content = File.ReadAllText(doc);
                 var doc_hash = GetHash(content);
 
                 if (!completeGenerate && !DocCheckModified(doc, doc_hash))
                 {
+                    Documents.Add(new() { Path = Path.GetFileName(doc) });
                     continue;
                 }
 
@@ -260,6 +345,8 @@ namespace BalaDoc
                 DocProcess(thisDoc);
                 DocRecord(doc, doc_hash);
             }
+
+            DataSave();
         }
     }
 }
