@@ -348,5 +348,10 @@ namespace BalaDoc
 
             DataSave();
         }
+
+        public void AddPage(string pageName)
+        {
+            File.WriteAllText(Path.Combine(WorkDir, _DirSourceDoc, pageName + ".md"), "");
+        }
     }
 }
