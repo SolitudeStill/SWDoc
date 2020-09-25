@@ -15,7 +15,10 @@ using System.Linq;
 using BalaDoc.Exception;
 using System.Text.Json;
 using Masuit.Tools.Strings;
-
+namespace System.Runtime.CompilerServices
+{
+    public class IsExternalInit { }
+}
 namespace BalaDoc
 {
     record DocumentInfo
@@ -113,8 +116,8 @@ namespace BalaDoc
         private static readonly string _DirTemplateDefault = $"{_DirTemplate}/{_NameDefaultTemplate}";
         private static readonly string _DirMeta = ".inf";
         private static readonly string _DirMetaFileTracking = $"{_DirMeta}/track";
-        private static readonly string _DirCategories = "category";
-        private static readonly string _DirDestPages = "pages";
+        private static readonly string _DirCategories = "dest/data";
+        private static readonly string _DirDestPages = "dest";
 
         private static readonly string _TemplateMetaUsing = $"{_DirMeta}/.";
 
@@ -193,7 +196,9 @@ namespace BalaDoc
             return BitConverter.ToInt32(bs);
         }
 
-        string CurrentTemplate { get => Directory.EnumerateFiles(_DirMeta).Select(path => Path.GetFileName(path)).Where(name => name[0] == '.').Select(name => name[1..^0]).FirstOrDefault(); }
+        private readonly string  _currentTemplate;
+        string CurrentTemplate { get => _currentTemplate; init { _currentTemplate = Directory.EnumerateFiles(_DirMeta).Select(path => Path.GetFileName(path)).Where(name => name[0] == '.').Select(name => name[1..^0]).FirstOrDefault(); } }
+
         public string GetTemplate(string templateName = "") => templateName switch
         {
             "" => CurrentTemplate ?? _NameDefaultTemplate,
@@ -315,7 +320,8 @@ namespace BalaDoc
         {
             if (TestVersion(this) != VerTestResult.Current)
                 throw new ComposerVersionMismatchException();
-            
+           
+
             LoadTemplate(templateName = GetTemplate(templateName));
             if(completeGenerate || CurrentTemplate != templateName)
             {
@@ -324,7 +330,7 @@ namespace BalaDoc
             // collect all documents
             var docs = Directory.EnumerateFiles(Path.Combine(WorkDir, _DirSourceDoc));
             foreach (var doc in docs)
-            { 
+            {
                 var content = File.ReadAllText(doc);
                 var doc_hash = GetHash(content);
 

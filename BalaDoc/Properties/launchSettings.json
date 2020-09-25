@@ -2,6 +2,7 @@
   "profiles": {
     "BalaDoc": {
       "commandName": "Project",
+      "commandLineArgs": "build",
       "workingDirectory": "D:\\GitRepository\\doctest"
     }
   }

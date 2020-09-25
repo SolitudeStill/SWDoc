@@ -12,7 +12,7 @@ namespace BalaDoc
     [Verb("build", HelpText ="Generate page(s).")]
     class BuildOption
     {
-        [Option('t', "template", Required = true, Default = "", HelpText = "Indicate the template to generate pages.")]
+        [Option('t', "template", Default = "", HelpText = "Indicate the template to generate pages.")]
         public string Template { get; set; }
         [Option('a', "all", Required = false, HelpText = "Generate pages completely, whether modified or not.")]
         public bool CompleteGenerate { get; set; }
