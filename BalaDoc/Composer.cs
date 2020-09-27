@@ -334,7 +334,7 @@ namespace BalaDoc
                 var content = File.ReadAllText(doc);
                 var doc_hash = GetHash(content);
 
-                if (!completeGenerate && !DocCheckModified(doc, doc_hash))
+                if (!completeGenerate && CurrentTemplate == templateName && !DocCheckModified(doc, doc_hash))
                 {
                     Documents.Add(new() { Path = Path.GetFileName(doc) });
                     continue;
